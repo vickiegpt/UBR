@@ -64,6 +64,7 @@
 #include <linux/seq_buf.h>
 #include <linux/sched/isolation.h>
 #include <linux/kmemleak.h>
+#include <linux/bede.h>
 #include "internal.h"
 #include <net/sock.h>
 #include <net/ip.h>
@@ -4525,6 +4526,13 @@ static int memory_numa_stat_show(struct seq_file *m, void *v)
 			size = lruvec_page_state_output(lruvec,
 							memory_stats[i].idx);
 			seq_printf(m, " N%d=%llu", nid, size);
+			
+			/* Update node_rss for NUMA node memory tracking (TDX) */
+			if (memory_stats[i].idx == NR_ANON_MAPPED) {
+				/* Use WRITE_ONCE for RCU protection */
+				WRITE_ONCE(memcg->node_rss[nid], 
+					   (lruvec_page_state(lruvec, NR_ANON_MAPPED) * PAGE_SIZE) >> 20);
+			}
 		}
 		seq_putc(m, '\n');
 	}
@@ -4645,6 +4653,182 @@ static ssize_t memory_reclaim(struct kernfs_open_file *of, char *buf,
 	return nbytes;
 }
 
+/* Bede helper functions for NUMA node management */
+bool bede_flush_node_rss(struct mem_cgroup *memcg)
+{
+	int nid;
+	struct lruvec *lruvec;
+	pg_data_t *pgdat;
+	u64 size;
+	
+	if (mem_cgroup_disabled())
+		return false;
+	
+	/* Flush stats */
+	mem_cgroup_flush_stats(memcg);
+	
+	for_each_node_state(nid, N_MEMORY) {
+		pgdat = NODE_DATA(nid);
+		if (!pgdat)
+			return false;
+		
+		lruvec = mem_cgroup_lruvec(memcg, pgdat);
+		if (!lruvec)
+			return false;
+		
+		/* Calculate RSS in MB */
+		size = lruvec_page_state_local(lruvec, NR_ANON_MAPPED);
+		/* Use WRITE_ONCE for RCU protection */
+		WRITE_ONCE(memcg->node_rss[nid], (size * PAGE_SIZE) >> 20);
+	}
+	
+	return true;
+}
+EXPORT_SYMBOL_GPL(bede_flush_node_rss);
+
+int bede_get_node(struct mem_cgroup *memcg, int node)
+{
+	int i;
+	
+	/* Use READ_ONCE for RCU protection */
+	if (READ_ONCE(memcg->node_limit[node]) > READ_ONCE(memcg->node_rss[node]))
+		return node;
+	
+	for (i = 0; i < 4; i++) {
+		if (READ_ONCE(memcg->node_limit[i]) > READ_ONCE(memcg->node_rss[i]))
+			return i;
+	}
+	
+	return 0;
+}
+EXPORT_SYMBOL_GPL(bede_get_node);
+
+bool bede_is_local_bind(struct mem_cgroup *memcg)
+{
+	/* Use READ_ONCE for RCU protection */
+	if (READ_ONCE(memcg->node_limit[0]) == 0)
+		return true;
+	return false;
+}
+EXPORT_SYMBOL_GPL(bede_is_local_bind);
+
+/* Node limit read/write functions */
+static int mem_cgroup_node_limit1_read(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	seq_printf(m, "%d\n", mem_cgroup_node_limit(memcg, 0));
+	return 0;
+}
+
+static ssize_t mem_cgroup_node_limit1_write(struct kernfs_open_file *of,
+					     char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int val;
+	int ret;
+
+	buf = strstrip(buf);
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < 0)
+		return -EINVAL;
+
+	/* Use WRITE_ONCE for RCU protection */
+	WRITE_ONCE(memcg->node_limit[0], val);
+
+	return nbytes;
+}
+
+static int mem_cgroup_node_limit2_read(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	seq_printf(m, "%d\n", mem_cgroup_node_limit(memcg, 1));
+	return 0;
+}
+
+static ssize_t mem_cgroup_node_limit2_write(struct kernfs_open_file *of,
+					     char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int val;
+	int ret;
+
+	buf = strstrip(buf);
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < 0)
+		return -EINVAL;
+
+	/* Use WRITE_ONCE for RCU protection */
+	WRITE_ONCE(memcg->node_limit[1], val);
+
+	return nbytes;
+}
+
+static int mem_cgroup_node_limit3_read(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	seq_printf(m, "%d\n", mem_cgroup_node_limit(memcg, 2));
+	return 0;
+}
+
+static ssize_t mem_cgroup_node_limit3_write(struct kernfs_open_file *of,
+					     char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int val;
+	int ret;
+
+	buf = strstrip(buf);
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < 0)
+		return -EINVAL;
+
+	/* Use WRITE_ONCE for RCU protection */
+	WRITE_ONCE(memcg->node_limit[2], val);
+
+	return nbytes;
+}
+
+static int mem_cgroup_node_limit4_read(struct seq_file *m, void *v)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_seq(m);
+
+	seq_printf(m, "%d\n", mem_cgroup_node_limit(memcg, 3));
+	return 0;
+}
+
+static ssize_t mem_cgroup_node_limit4_write(struct kernfs_open_file *of,
+					     char *buf, size_t nbytes, loff_t off)
+{
+	struct mem_cgroup *memcg = mem_cgroup_from_css(of_css(of));
+	int val;
+	int ret;
+
+	buf = strstrip(buf);
+	ret = kstrtoint(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val < 0)
+		return -EINVAL;
+
+	/* Use WRITE_ONCE for RCU protection */
+	WRITE_ONCE(memcg->node_limit[3], val);
+
+	return nbytes;
+}
+
 static struct cftype memory_files[] = {
 	{
 		.name = "current",
@@ -4715,6 +4899,30 @@ static struct cftype memory_files[] = {
 		.name = "reclaim",
 		.flags = CFTYPE_NS_DELEGATABLE,
 		.write = memory_reclaim,
+	},
+	{
+		.name = "node_limit1",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = mem_cgroup_node_limit1_read,
+		.write = mem_cgroup_node_limit1_write,
+	},
+	{
+		.name = "node_limit2",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = mem_cgroup_node_limit2_read,
+		.write = mem_cgroup_node_limit2_write,
+	},
+	{
+		.name = "node_limit3",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = mem_cgroup_node_limit3_read,
+		.write = mem_cgroup_node_limit3_write,
+	},
+	{
+		.name = "node_limit4",
+		.flags = CFTYPE_NOT_ON_ROOT,
+		.seq_show = mem_cgroup_node_limit4_read,
+		.write = mem_cgroup_node_limit4_write,
 	},
 	{ }	/* terminate */
 };

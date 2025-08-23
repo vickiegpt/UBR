@@ -1,0 +1,51 @@
+/* SPDX-License-Identifier: GPL-2.0 */
+/*
+ * mm/bede.h
+ *
+ * TDX NUMA node memory management interface
+ * Based on Bede-linux implementation
+ */
+
+#include <linux/cgroup-defs.h>
+#include <linux/cgroup.h>
+#include <linux/memcontrol.h>
+#include <linux/migrate.h>
+#include <linux/sched.h>
+#include <linux/sched/mm.h>
+#include <linux/workqueue.h>
+
+#define START_TIME(ts) ts = rdtsc()
+#define END_TIME(msg, ts) trace_printk("%s: %llu\n", msg, rdtsc() - ts)
+
+/** Get the cgroup by this struct. */
+struct bede_work_struct {
+	struct delayed_work work;
+	struct workqueue_struct *workqueue;
+	/* cgroup struct reverse mapping */
+	struct cgroup *cgrp;
+	bool should_migrate;
+};
+
+/* Watermark structure for userspace control */
+struct bede_watermark {
+	unsigned long high_watermark;  /* High watermark to trigger demotion */
+	unsigned long low_watermark;   /* Low watermark to trigger promotion */
+	unsigned long migration_limit; /* Max pages to migrate per cycle */
+};
+
+/* Global watermark control */
+extern struct bede_watermark bede_watermarks;
+
+/* Page migration functions */
+void bede_walk_page_table_and_migrate_to_node(struct task_struct *task,
+					       int from_node, int to_node, int count);
+int bede_get_node(struct mem_cgroup *memcg, int node);
+bool bede_is_local_bind(struct mem_cgroup *memcg);
+bool bede_flush_node_rss(struct mem_cgroup *memcg);
+
+/* Promotion and demotion functions */
+void bede_promotion(struct work_struct *work);
+void bede_demotion(struct work_struct *work);
+int bede_init_kthread(void);
+void bede_exit_kthread(void);
+void bede_set_watermarks(unsigned long high, unsigned long low, unsigned long limit);

@@ -318,6 +318,10 @@ struct mem_cgroup {
 	spinlock_t event_list_lock;
 #endif /* CONFIG_MEMCG_V1 */
 
+	/* TDX cgroup hint arrays for NUMA node memory management */
+	int    node_limit[4];		/* Memory limits per NUMA node */
+	int    node_rss[4];		/* Current memory usage per NUMA node */
+
 	struct mem_cgroup_per_node *nodeinfo[];
 };
 

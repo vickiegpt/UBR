@@ -233,4 +233,21 @@ config CXL_MCE
 	def_bool y
 	depends on X86_MCE && MEMORY_FAILURE
 
+config CXL_CRYPTO
+	tristate "CXL Type 1 Crypto Accelerator Support"
+	depends on CXL_PCI
+	select CRYPTO
+	select CRYPTO_ENGINE
+	select CRYPTO_AES
+	help
+	  Enable support for CXL Type 1 crypto acceleration devices.
+	  These devices provide hardware-accelerated cryptographic
+	  operations using CXL cache-coherent memory access.
+
+	  Say 'y/m' to enable the driver for CXL Type 1 crypto devices
+	  that can accelerate AES encryption/decryption and other
+	  cryptographic operations through the CXL interface.
+
+	  If unsure say 'n'.
+
 endif
