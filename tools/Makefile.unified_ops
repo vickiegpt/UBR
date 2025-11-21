@@ -1,0 +1,37 @@
+# Makefile for io_uring unified operations
+#
+# Build with: make -f Makefile.unified_ops
+
+CC = gcc
+CFLAGS = -Wall -O2
+LDFLAGS = -luring
+
+# Shared library for ld_preload
+PRELOAD_LIB = libio_uring_unified.so
+PRELOAD_SRC = io_uring_unified_preload.c
+
+# Test program
+TEST_PROG = test_unified_ops
+TEST_SRC = test_unified_ops.c
+
+all: $(PRELOAD_LIB) $(TEST_PROG)
+
+$(PRELOAD_LIB): $(PRELOAD_SRC)
+	@echo "Building LD_PRELOAD library..."
+	$(CC) -shared -fPIC $(CFLAGS) -o $@ $< $(LDFLAGS) -ldl -lpthread
+
+$(TEST_PROG): $(TEST_SRC)
+	@echo "Building test program..."
+	$(CC) $(CFLAGS) -o $@ $<
+
+clean:
+	rm -f $(PRELOAD_LIB) $(TEST_PROG)
+	rm -f /dev/shm/io_uring_unified_shm
+
+test: all
+	@echo ""
+	@echo "Running test with io_uring unified operations..."
+	@echo "================================================"
+	IO_URING_UNIFIED_ENABLED=1 LD_PRELOAD=./$(PRELOAD_LIB) ./$(TEST_PROG)
+
+.PHONY: all clean test

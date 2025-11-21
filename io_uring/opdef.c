@@ -38,6 +38,7 @@
 #include "futex.h"
 #include "truncate.h"
 #include "zcrx.h"
+#include "unified_ops.h"
 
 static int io_no_issue(struct io_kiocb *req, unsigned int issue_flags)
 {
@@ -574,6 +575,11 @@ const struct io_issue_def io_issue_defs[] = {
 		.prep			= io_pipe_prep,
 		.issue			= io_pipe,
 	},
+	[IORING_OP_UNIFIED_OPS] = {
+		.audit_skip		= 1,
+		.prep			= io_unified_ops_prep,
+		.issue			= io_unified_ops_issue,
+	},
 };
 
 const struct io_cold_def io_cold_defs[] = {
@@ -822,6 +828,10 @@ const struct io_cold_def io_cold_defs[] = {
 	},
 	[IORING_OP_PIPE] = {
 		.name			= "PIPE",
+	},
+	[IORING_OP_UNIFIED_OPS] = {
+		.name			= "UNIFIED_OPS",
+		.cleanup		= io_unified_ops_cleanup,
 	},
 };
 

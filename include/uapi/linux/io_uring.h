@@ -289,6 +289,7 @@ enum io_uring_op {
 	IORING_OP_READV_FIXED,
 	IORING_OP_WRITEV_FIXED,
 	IORING_OP_PIPE,
+	IORING_OP_UNIFIED_OPS,
 
 	/* this goes last, obviously */
 	IORING_OP_LAST,
@@ -1023,6 +1024,35 @@ struct io_uring_zcrx_ifq_reg {
 	__u32	zcrx_id;
 	__u32	__resv2;
 	__u64	__resv[3];
+};
+
+/*
+ * IORING_OP_UNIFIED_OPS sub-operation codes
+ * These are stored in sqe->len to indicate which operation to perform
+ */
+enum io_uring_unified_op {
+	IO_UNIFIED_OP_READ = 0,
+	IO_UNIFIED_OP_SEND = 1,
+	IO_UNIFIED_OP_CALC = 2,
+};
+
+/*
+ * Shared memory structure for IORING_OP_UNIFIED_OPS
+ * This structure is shared between multiple processes
+ */
+struct io_uring_unified_shared {
+	__u64	read_count;		/* Number of read operations */
+	__u64	send_count;		/* Number of send operations */
+	__u64	calc_count;		/* Number of calculate operations */
+	__u64	read_bytes;		/* Total bytes read */
+	__u64	send_bytes;		/* Total bytes sent */
+	__u64	calc_result;		/* Last calculation result */
+	__u32	read_errors;		/* Read operation errors */
+	__u32	send_errors;		/* Send operation errors */
+	__u32	calc_errors;		/* Calculate operation errors */
+	__u32	lock;			/* Spinlock for synchronization */
+	__u64	timestamp;		/* Last operation timestamp */
+	__u64	__pad[3];		/* Reserved for future use */
 };
 
 #ifdef __cplusplus
