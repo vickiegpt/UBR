@@ -18,9 +18,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-/* External function from preload library */
-extern ssize_t io_uring_calculate(uint64_t *data, size_t count);
-extern void print_unified_stats(void);
+/* External function from preload library (weak symbols for LD_PRELOAD) */
+extern __attribute__((weak)) ssize_t io_uring_calculate(uint64_t *data, size_t count);
+extern __attribute__((weak)) void print_unified_stats(void);
 
 /* Process A: Read operation */
 void process_a_read(void)

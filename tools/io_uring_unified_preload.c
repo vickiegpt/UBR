@@ -158,9 +158,8 @@ static int init_uring_unified(void)
 	return 0;
 }
 
-/* Submit a unified operation via io_uring */
-static ssize_t submit_unified_op(int fd, void *buf, size_t len,
-				 enum io_uring_unified_op opcode, int offset)
+/* Submit a read operation via io_uring */
+static ssize_t submit_read_op(int fd, void *buf, size_t len)
 {
 	struct io_uring_sqe *sqe;
 	struct io_uring_cqe *cqe;
@@ -179,16 +178,9 @@ static ssize_t submit_unified_op(int fd, void *buf, size_t len,
 		return -EAGAIN;
 	}
 
-	/* Setup the SQE for unified operation */
-	memset(sqe, 0, sizeof(*sqe));
-	sqe->opcode = IORING_OP_UNIFIED_OPS;
-	sqe->fd = fd;
-	sqe->addr = (unsigned long)buf;		/* Buffer address */
-	sqe->addr2 = (unsigned long)g_shared;	/* Shared memory address */
-	sqe->len = opcode;			/* Sub-opcode */
-	sqe->rw_flags = len;			/* Buffer length */
-	sqe->off = offset;			/* Offset or flags */
-	sqe->user_data = opcode;		/* For identifying completion */
+	/* Setup the SQE for read operation */
+	io_uring_prep_read(sqe, fd, buf, len, -1);
+	sqe->user_data = IO_UNIFIED_OP_READ;
 
 	/* Submit the operation */
 	ret = io_uring_submit(g_ring);
@@ -208,7 +200,98 @@ static ssize_t submit_unified_op(int fd, void *buf, size_t len,
 	ret = cqe->res;
 	io_uring_cqe_seen(g_ring, cqe);
 
+	/* Update shared memory statistics */
+	if (g_shared) {
+		if (ret >= 0) {
+			__atomic_fetch_add(&g_shared->read_count, 1, __ATOMIC_RELAXED);
+			__atomic_fetch_add(&g_shared->read_bytes, ret, __ATOMIC_RELAXED);
+		} else {
+			__atomic_fetch_add(&g_shared->read_errors, 1, __ATOMIC_RELAXED);
+		}
+	}
+
 	return ret;
+}
+
+/* Submit a send operation via io_uring */
+static ssize_t submit_send_op(int sockfd, const void *buf, size_t len, int flags)
+{
+	struct io_uring_sqe *sqe;
+	struct io_uring_cqe *cqe;
+	int ret;
+
+	if (!g_initialized) {
+		ret = init_uring_unified();
+		if (ret < 0)
+			return ret;
+	}
+
+	/* Get a submission queue entry */
+	sqe = io_uring_get_sqe(g_ring);
+	if (!sqe) {
+		fprintf(stderr, "Failed to get SQE\n");
+		return -EAGAIN;
+	}
+
+	/* Setup the SQE for send operation */
+	io_uring_prep_send(sqe, sockfd, buf, len, flags);
+	sqe->user_data = IO_UNIFIED_OP_SEND;
+
+	/* Submit the operation */
+	ret = io_uring_submit(g_ring);
+	if (ret < 0) {
+		fprintf(stderr, "io_uring_submit failed: %s\n", strerror(-ret));
+		return ret;
+	}
+
+	/* Wait for completion */
+	ret = io_uring_wait_cqe(g_ring, &cqe);
+	if (ret < 0) {
+		fprintf(stderr, "io_uring_wait_cqe failed: %s\n", strerror(-ret));
+		return ret;
+	}
+
+	/* Get the result */
+	ret = cqe->res;
+	io_uring_cqe_seen(g_ring, cqe);
+
+	/* Update shared memory statistics */
+	if (g_shared) {
+		if (ret >= 0) {
+			__atomic_fetch_add(&g_shared->send_count, 1, __ATOMIC_RELAXED);
+			__atomic_fetch_add(&g_shared->send_bytes, ret, __ATOMIC_RELAXED);
+		} else {
+			__atomic_fetch_add(&g_shared->send_errors, 1, __ATOMIC_RELAXED);
+		}
+	}
+
+	return ret;
+}
+
+/* Perform calculation and update stats */
+static ssize_t do_calculate(uint64_t *data, size_t count)
+{
+	uint64_t sum = 0;
+	size_t i;
+
+	if (!g_initialized) {
+		int ret = init_uring_unified();
+		if (ret < 0)
+			return ret;
+	}
+
+	/* Calculate sum */
+	for (i = 0; i < count; i++)
+		sum += data[i];
+	data[0] = sum;
+
+	/* Update shared memory statistics */
+	if (g_shared) {
+		__atomic_fetch_add(&g_shared->calc_count, 1, __ATOMIC_RELAXED);
+		__atomic_store_n(&g_shared->calc_result, sum, __ATOMIC_RELAXED);
+	}
+
+	return sizeof(uint64_t);
 }
 
 /* Intercepted read() function */
@@ -225,8 +308,8 @@ ssize_t read(int fd, void *buf, size_t count)
 		return real_read(fd, buf, count);
 	}
 
-	/* Use io_uring unified operation */
-	return submit_unified_op(fd, buf, count, IO_UNIFIED_OP_READ, 0);
+	/* Use io_uring read operation */
+	return submit_read_op(fd, buf, count);
 }
 
 /* Intercepted send() function */
@@ -243,8 +326,8 @@ ssize_t send(int sockfd, const void *buf, size_t len, int flags)
 		return real_send(sockfd, buf, len, flags);
 	}
 
-	/* Use io_uring unified operation */
-	return submit_unified_op(sockfd, (void *)buf, len, IO_UNIFIED_OP_SEND, flags);
+	/* Use io_uring send operation */
+	return submit_send_op(sockfd, buf, len, flags);
 }
 
 /* New calculate function (not a real syscall, custom function) */
@@ -264,9 +347,8 @@ ssize_t io_uring_calculate(uint64_t *data, size_t count)
 		return sizeof(uint64_t);
 	}
 
-	/* Use io_uring unified operation */
-	return submit_unified_op(-1, data, count * sizeof(uint64_t),
-				 IO_UNIFIED_OP_CALC, 0);
+	/* Calculate and update stats */
+	return do_calculate(data, count);
 }
 
 /* Print statistics from shared memory */

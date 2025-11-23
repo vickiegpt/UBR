@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <netinet/in.h>
 #ifdef __sun__
 #include <inttypes.h>
@@ -398,16 +399,6 @@ void get_src_version(const char *modname, char sum[], unsigned sumlen)
 	buf = read_text_file(filelist);
 	pos = buf;
 
-	md4_init(&md);
-	while ((fname = strsep(&pos, "\n"))) {
-		if (!*fname)
-			continue;
-		if (!(is_static_library(fname)) &&
-				!parse_source_files(fname, &md))
-			goto free;
-	}
-
-	md4_final_ascii(&md, sum, sumlen);
 free:
 	free(buf);
 }
