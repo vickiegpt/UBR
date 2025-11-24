@@ -1055,6 +1055,22 @@ struct io_uring_unified_shared {
 	__u64	__pad[3];		/* Reserved for future use */
 };
 
+/*
+ * Scheduler hints for io_uring read/send operations
+ * Used with io_uring_sched_hints syscall
+ */
+struct io_uring_sched_hints {
+	__u64	read_freq_ns;		/* Expected read interval in nanoseconds */
+	__u64	send_freq_ns;		/* Expected send interval in nanoseconds */
+	__u32	batch_size;		/* Preferred batch size for operations */
+	__u32	flags;			/* Scheduling hint flags */
+#define IO_URING_SCHED_HINT_LATENCY	(1U << 0)	/* Optimize for latency */
+#define IO_URING_SCHED_HINT_THROUGHPUT	(1U << 1)	/* Optimize for throughput */
+#define IO_URING_SCHED_HINT_REALTIME	(1U << 2)	/* Real-time priority */
+#define IO_URING_SCHED_HINT_NVME_XDP	(1U << 3)	/* NVMe to XDP pipeline */
+	__u64	__resv[2];		/* Reserved for future use */
+};
+
 #ifdef __cplusplus
 }
 #endif

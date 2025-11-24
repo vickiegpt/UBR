@@ -15,8 +15,34 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <errno.h>
+#include <time.h>
+#include <linux/io_uring.h>
+
+/* Syscall number for io_uring_sched_hints */
+#ifndef __NR_io_uring_sched_hints
+#define __NR_io_uring_sched_hints 468
+#endif
+
+/* Scheduler hint flags */
+#define IO_URING_SCHED_HINT_LATENCY     (1U << 0)
+#define IO_URING_SCHED_HINT_THROUGHPUT  (1U << 1)
+#define IO_URING_SCHED_HINT_REALTIME    (1U << 2)
+#define IO_URING_SCHED_HINT_NVME_XDP    (1U << 3)
+
+/* Scheduler hints structure */
+struct io_uring_sched_hints {
+    uint64_t read_freq_ns;
+    uint64_t send_freq_ns;
+    uint32_t batch_size;
+    uint32_t flags;
+    uint64_t __resv[2];
+};
 
 /* External function from preload library (weak symbols for LD_PRELOAD) */
 extern __attribute__((weak)) ssize_t io_uring_calculate(uint64_t *data, size_t count);
@@ -126,6 +152,147 @@ void process_c_calculate(void)
 	}
 }
 
+/* Process D: Scheduler hints test */
+void process_d_sched_hints(void)
+{
+	struct io_uring_sched_hints hints;
+	int ret;
+
+	printf("[Process D] Testing scheduler hints syscall\n");
+
+	/* Set scheduler hints for NVMe-XDP pipeline */
+	memset(&hints, 0, sizeof(hints));
+	hints.read_freq_ns = 100000;   /* 100us read interval */
+	hints.send_freq_ns = 50000;    /* 50us send interval */
+	hints.batch_size = 64;
+	hints.flags = IO_URING_SCHED_HINT_NVME_XDP | IO_URING_SCHED_HINT_LATENCY;
+
+	ret = syscall(__NR_io_uring_sched_hints, 0, &hints, 0);
+	if (ret < 0) {
+		printf("[Process D] Set hints failed: %s (expected on older kernels)\n",
+		       strerror(errno));
+		return;
+	}
+	printf("[Process D] Set scheduler hints: read_freq=%lu ns, send_freq=%lu ns, batch=%u\n",
+	       hints.read_freq_ns, hints.send_freq_ns, hints.batch_size);
+
+	/* Simulate some read operations */
+	for (int i = 0; i < 5; i++) {
+		ret = syscall(__NR_io_uring_sched_hints, 2, NULL, 0);  /* record read */
+		if (ret < 0 && i == 0) {
+			printf("[Process D] Record op failed: %s\n", strerror(errno));
+		}
+		usleep(100);  /* 100us delay */
+	}
+
+	/* Simulate some send operations */
+	for (int i = 0; i < 5; i++) {
+		ret = syscall(__NR_io_uring_sched_hints, 2, NULL, 1);  /* record send */
+		usleep(50);   /* 50us delay */
+	}
+
+	/* Get updated hints */
+	memset(&hints, 0, sizeof(hints));
+	ret = syscall(__NR_io_uring_sched_hints, 1, &hints, 0);
+	if (ret < 0) {
+		printf("[Process D] Get hints failed: %s\n", strerror(errno));
+		return;
+	}
+
+	printf("[Process D] Retrieved hints: read_freq=%lu ns, send_freq=%lu ns\n",
+	       hints.read_freq_ns, hints.send_freq_ns);
+	printf("[Process D] Scheduler hints test completed\n");
+}
+
+/* Process E: NVMe-XDP pipeline simulation */
+void process_e_nvme_xdp_pipeline(void)
+{
+	struct io_uring_sched_hints hints;
+	int fd;
+	char buffer[4096];
+	struct timespec start, end;
+	uint64_t total_ns = 0;
+	int iterations = 10;
+	int ret;
+
+	printf("[Process E] Simulating NVMe-XDP pipeline\n");
+
+	/* Set pipeline-optimized scheduler hints */
+	memset(&hints, 0, sizeof(hints));
+	hints.read_freq_ns = 10000;    /* 10us target */
+	hints.send_freq_ns = 10000;    /* 10us target */
+	hints.batch_size = iterations;
+	hints.flags = IO_URING_SCHED_HINT_NVME_XDP |
+	              IO_URING_SCHED_HINT_LATENCY |
+	              IO_URING_SCHED_HINT_REALTIME;
+
+	ret = syscall(__NR_io_uring_sched_hints, 0, &hints, 0);
+	if (ret < 0) {
+		printf("[Process E] Could not set scheduler hints: %s\n", strerror(errno));
+		/* Continue anyway for testing */
+	}
+
+	/* Create test file simulating NVMe read */
+	fd = open("/tmp/test_nvme_sim.dat", O_CREAT | O_RDWR | O_TRUNC, 0644);
+	if (fd < 0) {
+		perror("open");
+		return;
+	}
+
+	/* Write test pattern */
+	memset(buffer, 0xAB, sizeof(buffer));
+	write(fd, buffer, sizeof(buffer));
+	lseek(fd, 0, SEEK_SET);
+
+	printf("[Process E] Running %d iterations of read-compute-send pipeline\n", iterations);
+
+	clock_gettime(CLOCK_MONOTONIC, &start);
+
+	for (int i = 0; i < iterations; i++) {
+		/* Simulate NVMe read */
+		lseek(fd, 0, SEEK_SET);
+		ret = read(fd, buffer, sizeof(buffer));
+		if (ret < 0) {
+			perror("read");
+			break;
+		}
+
+		/* Record read operation */
+		syscall(__NR_io_uring_sched_hints, 2, NULL, 0);
+
+		/* Simulate computation (XOR transform) */
+		uint64_t *ptr = (uint64_t *)buffer;
+		for (int j = 0; j < sizeof(buffer) / sizeof(uint64_t); j++) {
+			ptr[j] ^= 0xDEADBEEFCAFEBABEULL;
+		}
+
+		/* Simulate network send (just record it) */
+		syscall(__NR_io_uring_sched_hints, 2, NULL, 1);
+	}
+
+	clock_gettime(CLOCK_MONOTONIC, &end);
+
+	total_ns = (end.tv_sec - start.tv_sec) * 1000000000ULL +
+	           (end.tv_nsec - start.tv_nsec);
+
+	printf("[Process E] Pipeline completed: %d iterations in %lu ns\n",
+	       iterations, total_ns);
+	printf("[Process E] Average latency: %lu ns per iteration\n",
+	       total_ns / iterations);
+
+	/* Get final scheduler statistics */
+	memset(&hints, 0, sizeof(hints));
+	ret = syscall(__NR_io_uring_sched_hints, 1, &hints, 0);
+	if (ret == 0) {
+		printf("[Process E] Final measured frequencies:\n");
+		printf("           - Read: %lu ns\n", hints.read_freq_ns);
+		printf("           - Send: %lu ns\n", hints.send_freq_ns);
+	}
+
+	close(fd);
+	unlink("/tmp/test_nvme_sim.dat");
+}
+
 int main(int argc, char *argv[])
 {
 	printf("=== IO_URING Unified Operations Test ===\n\n");
@@ -150,9 +317,17 @@ int main(int argc, char *argv[])
 	process_c_calculate();
 	printf("\n");
 
+	printf("--- Simulating Process D (SCHEDULER HINTS) ---\n");
+	process_d_sched_hints();
+	printf("\n");
+
+	printf("--- Simulating Process E (NVMe-XDP PIPELINE) ---\n");
+	process_e_nvme_xdp_pipeline();
+	printf("\n");
+
 	/* Print statistics from shared memory */
 	print_unified_stats();
 
-	printf("Test completed!\n");
+	printf("=== All tests completed! ===\n");
 	return 0;
 }

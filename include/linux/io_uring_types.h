@@ -102,6 +102,18 @@ struct io_uring_task {
 	atomic_t			inflight_tracked;
 	struct percpu_counter		inflight;
 
+	/* Scheduler hints for read/send frequency */
+	struct {
+		u64			read_freq_ns;	/* read interval in ns */
+		u64			send_freq_ns;	/* send interval in ns */
+		u64			last_read_ts;	/* last read timestamp */
+		u64			last_send_ts;	/* last send timestamp */
+		u32			read_count;	/* read operations count */
+		u32			send_count;	/* send operations count */
+		u32			batch_size;	/* preferred batch size */
+		u32			flags;		/* scheduling hints */
+	} sched_hints;
+
 	struct { /* task_work */
 		struct llist_head	task_list;
 		struct callback_head	task_work;

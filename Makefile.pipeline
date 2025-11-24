@@ -1,0 +1,56 @@
+# Makefile for NVMe to AF_XDP Pipeline
+
+CC = gcc
+CLANG = clang
+LLC = llc
+
+# Compiler flags
+CFLAGS = -Wall -O2 -g -pthread
+LDFLAGS = -lpthread
+
+# BPF flags
+BPF_CFLAGS = -O2 -target bpf -D__TARGET_ARCH_x86
+
+# Targets
+TARGETS = nvme_xdp_pipeline xdp_sock_kern.o
+
+.PHONY: all clean install
+
+all: $(TARGETS)
+
+# Userspace program
+nvme_xdp_pipeline: nvme_xdp_pipeline.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
+# XDP BPF program
+xdp_sock_kern.o: xdp_sock_kern.c
+	$(CLANG) $(BPF_CFLAGS) -c $< -o $@
+
+# Install XDP program
+install: xdp_sock_kern.o
+	@echo "Load XDP program with:"
+	@echo "  ip link set dev <iface> xdp obj xdp_sock_kern.o sec xdp"
+
+# Uninstall XDP program
+uninstall:
+	@echo "Unload XDP program with:"
+	@echo "  ip link set dev <iface> xdp off"
+
+clean:
+	rm -f nvme_xdp_pipeline xdp_sock_kern.o
+
+# Help
+help:
+	@echo "NVMe to AF_XDP Pipeline Build System"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all       - Build everything"
+	@echo "  clean     - Remove built files"
+	@echo "  install   - Show XDP installation command"
+	@echo "  uninstall - Show XDP uninstallation command"
+	@echo ""
+	@echo "Usage:"
+	@echo "  1. Build:  make -f Makefile.pipeline"
+	@echo "  2. Load XDP: ip link set dev eth0 xdp obj xdp_sock_kern.o sec xdp"
+	@echo "  3. Run:    sudo ./nvme_xdp_pipeline -d /dev/nvme0n1 -i eth0"
+	@echo "  4. Unload: ip link set dev eth0 xdp off"
