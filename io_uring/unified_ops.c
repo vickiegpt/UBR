@@ -21,6 +21,7 @@
 #include "kbuf.h"
 #include "rsrc.h"
 #include "unified_ops.h"
+#include "sched_hints.h"
 
 struct io_unified_ops {
 	struct file			*file;
@@ -259,12 +260,21 @@ int io_unified_ops_issue(struct io_kiocb *req, unsigned int issue_flags)
 	switch (op->opcode) {
 	case IO_UNIFIED_OP_READ:
 		ret = io_unified_do_read(req, op, shared);
+		/* Update scheduler hints for read frequency tracking */
+		if (req->tctx)
+			io_sched_record_op(req->tctx, 0, ret > 0 ? ret : 0);
 		break;
 	case IO_UNIFIED_OP_SEND:
 		ret = io_unified_do_send(req, op, shared);
+		/* Update scheduler hints for send frequency tracking */
+		if (req->tctx)
+			io_sched_record_op(req->tctx, 1, ret > 0 ? ret : 0);
 		break;
 	case IO_UNIFIED_OP_CALC:
 		ret = io_unified_do_calc(req, op, shared);
+		/* Calc ops recorded as type 2 */
+		if (req->tctx)
+			io_sched_record_op(req->tctx, 2, 0);
 		break;
 	default:
 		ret = -EINVAL;

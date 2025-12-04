@@ -190,7 +190,15 @@ static inline void psi_write_end(int cpu)
 
 static inline u32 psi_read_begin(int cpu)
 {
-	return read_seqcount_begin(per_cpu_ptr(&psi_seq, cpu));
+	/*
+	 * Use raw_read_seqcount() instead of read_seqcount_begin() to avoid
+	 * spinning while a writer is active. On systems with many CPUs under
+	 * heavy scheduling load, read_seqcount_begin() can spin indefinitely
+	 * waiting for a write to complete, causing soft lockups. Since we
+	 * have a retry loop with a limit anyway, just read the current
+	 * sequence value without waiting.
+	 */
+	return raw_read_seqcount(per_cpu_ptr(&psi_seq, cpu));
 }
 
 static inline bool psi_read_retry(int cpu, u32 seq)
@@ -272,6 +280,13 @@ static u32 test_states(unsigned int *tasks, u32 state_mask)
 	return state_mask;
 }
 
+/*
+ * Maximum number of seqlock retry attempts before giving up and using
+ * potentially stale data. This prevents soft lockups on systems with
+ * many CPUs under heavy scheduling load.
+ */
+#define PSI_SEQLOCK_RETRY_MAX	16
+
 static void get_recent_times(struct psi_group *group, int cpu,
 			     enum psi_aggregators aggregator, u32 *times,
 			     u32 *pchanged_states)
@@ -283,6 +298,7 @@ static void get_recent_times(struct psi_group *group, int cpu,
 	enum psi_states s;
 	unsigned int seq;
 	u32 state_mask;
+	int retries = 0;
 
 	*pchanged_states = 0;
 
@@ -295,6 +311,14 @@ static void get_recent_times(struct psi_group *group, int cpu,
 		state_start = groupc->state_start;
 		if (cpu == current_cpu)
 			memcpy(tasks, groupc->tasks, sizeof(groupc->tasks));
+		/*
+		 * Limit retries to avoid soft lockups on systems with many
+		 * CPUs under heavy scheduling load. PSI statistics are
+		 * approximate by nature, so using slightly stale data is
+		 * acceptable.
+		 */
+		if (++retries > PSI_SEQLOCK_RETRY_MAX)
+			break;
 	} while (psi_read_retry(cpu, seq));
 
 	/* Calculate state time deltas against the previous snapshot */

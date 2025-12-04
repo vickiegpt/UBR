@@ -1071,6 +1071,65 @@ struct io_uring_sched_hints {
 	__u64	__resv[2];		/* Reserved for future use */
 };
 
+/*
+ * Chain-based dependency scheduling for io_uring
+ * Supports priority inheritance to prevent priority inversion
+ */
+
+/* Priority levels */
+#define IO_URING_PRIO_MIN		0
+#define IO_URING_PRIO_LOW		64
+#define IO_URING_PRIO_NORMAL		128
+#define IO_URING_PRIO_HIGH		192
+#define IO_URING_PRIO_REALTIME		255
+
+/* Chain operation codes for io_uring_sched_hints syscall */
+#define IO_URING_SCHED_OP_SET		0	/* Set scheduler hints */
+#define IO_URING_SCHED_OP_GET		1	/* Get scheduler hints */
+#define IO_URING_SCHED_OP_RECORD	2	/* Record I/O operation */
+#define IO_URING_SCHED_OP_CHAIN_ADD	3	/* Add to dependency chain */
+#define IO_URING_SCHED_OP_CHAIN_DONE	4	/* Mark chain node complete */
+#define IO_URING_SCHED_OP_CHAIN_CANCEL	5	/* Cancel chain node */
+#define IO_URING_SCHED_OP_GET_STATS	6	/* Get scheduler statistics */
+
+/*
+ * Chain request - add a request to the dependency chain
+ * Used with IO_URING_SCHED_OP_CHAIN_ADD
+ */
+struct io_uring_chain_req {
+	__u64	id;		/* Request ID (typically user_data from SQE) */
+	__u64	pred_id;	/* Predecessor ID (0 = no dependency) */
+	__u8	priority;	/* Request priority (IO_URING_PRIO_*) */
+	__u8	flags;		/* Chain flags */
+#define IO_URING_CHAIN_HARD	(1U << 0)	/* Fail if predecessor fails */
+#define IO_URING_CHAIN_SOFT	(1U << 1)	/* Continue even if predecessor fails */
+	__u8	__pad[6];
+};
+
+/*
+ * Chain completion - mark a chain node as complete
+ * Used with IO_URING_SCHED_OP_CHAIN_DONE
+ */
+struct io_uring_chain_complete {
+	__u64	id;		/* Request ID to complete */
+	__s32	result;		/* Completion result */
+	__u32	__pad;
+};
+
+/*
+ * Scheduler statistics
+ * Used with IO_URING_SCHED_OP_GET_STATS
+ */
+struct io_uring_sched_stats {
+	__u64	inversions_prevented;	/* Priority inversions caught */
+	__u64	inherits_applied;	/* Priority inheritance events */
+	__u64	chains_completed;	/* Completed dependency chains */
+	__u64	avg_chain_len;		/* Average chain length */
+	__u32	nr_pending;		/* Currently pending requests */
+	__u32	nr_ready;		/* Requests ready to execute */
+	__u64	__resv[4];		/* Reserved */
+};
+
 #ifdef __cplusplus
 }
 #endif
