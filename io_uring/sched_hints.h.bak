@@ -21,7 +21,6 @@ struct io_uring_task;
 #define IO_PRIO_HIGH		192
 #define IO_PRIO_REALTIME	255
 #define IO_PRIO_MAX		255
-#ifdef UBR_ENABLE_CHAIN_SCHED
 
 /*
  * Chain node - represents a request in a dependency chain
@@ -154,7 +153,6 @@ bool io_sched_has_ready(struct io_sched_ctx *sched);
  */
 bool io_sched_can_run(struct io_sched_ctx *sched, u64 id);
 u8 io_sched_get_effective_prio(struct io_sched_ctx *sched, u64 id);
-#endif /* UBR_ENABLE_CHAIN_SCHED */
 
 /*
  * Integration with existing scheduler hints

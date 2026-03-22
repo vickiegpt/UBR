@@ -41,14 +41,6 @@ static void __exit io_sched_hints_exit(void)
 	kmem_cache_destroy(chain_node_cache);
 }
 
-/*
- * Chain scheduler infrastructure is currently disabled.
- * Define UBR_ENABLE_CHAIN_SCHED to enable chain dependency tracking,
- * priority queue, and priority inheritance features.
- * These features require io_sched_ctx to be embedded in io_ring_ctx
- * and syscall ops 3/4/5 to be wired up.
- */
-#ifdef UBR_ENABLE_CHAIN_SCHED
 /* ============== Scheduler Context Management ============== */
 
 int io_sched_ctx_init(struct io_sched_ctx *sched, struct io_ring_ctx *ctx)
@@ -499,8 +491,6 @@ u8 io_sched_get_effective_prio(struct io_sched_ctx *sched, u64 id)
 	return prio;
 }
 EXPORT_SYMBOL_GPL(io_sched_get_effective_prio);
-
-#endif /* UBR_ENABLE_CHAIN_SCHED */
 
 /* ============== Original Scheduler Hints (frequency tracking) ============== */
 

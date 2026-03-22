@@ -32,6 +32,34 @@ struct io_unified_ops {
 	u32				offset;		/* File offset or send flags */
 };
 
+/* Simple advisory spinlock on userspace lock field to reduce (not eliminate)
+ * races in shared memory stats updates. Uses get_user/put_user so it cannot
+ * be truly atomic, but it significantly narrows the race window.
+ */
+static inline void io_unified_lock_shared(struct io_uring_unified_shared __user *shared)
+{
+	u32 val;
+	int retries = 0;
+
+	do {
+		get_user(val, &shared->lock);
+		if (val == 0) {
+			put_user(1, &shared->lock);
+			/* Re-read to reduce (not eliminate) race window */
+			get_user(val, &shared->lock);
+			if (val == 1)
+				return;
+		}
+		cpu_relax();
+	} while (++retries < 64);
+	/* Fallback: proceed without lock after too many retries */
+}
+
+static inline void io_unified_unlock_shared(struct io_uring_unified_shared __user *shared)
+{
+	put_user(0, &shared->lock);
+}
+
 /* Helper to update shared memory statistics using get_user/put_user */
 static inline void io_unified_update_read_stats(struct io_uring_unified_shared __user *shared,
 						ssize_t bytes, bool error)
@@ -39,6 +67,7 @@ static inline void io_unified_update_read_stats(struct io_uring_unified_shared _
 	u64 val64;
 	u32 val32;
 
+	io_unified_lock_shared(shared);
 	if (error) {
 		if (!get_user(val32, &shared->read_errors)) {
 			val32++;
@@ -55,6 +84,7 @@ static inline void io_unified_update_read_stats(struct io_uring_unified_shared _
 		}
 	}
 	put_user(ktime_get_ns(), &shared->timestamp);
+	io_unified_unlock_shared(shared);
 }
 
 static inline void io_unified_update_send_stats(struct io_uring_unified_shared __user *shared,
@@ -63,6 +93,7 @@ static inline void io_unified_update_send_stats(struct io_uring_unified_shared _
 	u64 val64;
 	u32 val32;
 
+	io_unified_lock_shared(shared);
 	if (error) {
 		if (!get_user(val32, &shared->send_errors)) {
 			val32++;
@@ -79,6 +110,7 @@ static inline void io_unified_update_send_stats(struct io_uring_unified_shared _
 		}
 	}
 	put_user(ktime_get_ns(), &shared->timestamp);
+	io_unified_unlock_shared(shared);
 }
 
 static inline void io_unified_update_calc_stats(struct io_uring_unified_shared __user *shared,
@@ -87,6 +119,7 @@ static inline void io_unified_update_calc_stats(struct io_uring_unified_shared _
 	u64 val64;
 	u32 val32;
 
+	io_unified_lock_shared(shared);
 	if (error) {
 		if (!get_user(val32, &shared->calc_errors)) {
 			val32++;
@@ -100,6 +133,7 @@ static inline void io_unified_update_calc_stats(struct io_uring_unified_shared _
 		put_user(result, &shared->calc_result);
 	}
 	put_user(ktime_get_ns(), &shared->timestamp);
+	io_unified_unlock_shared(shared);
 }
 
 static int io_unified_do_read(struct io_kiocb *req, struct io_unified_ops *op,

@@ -38,6 +38,9 @@
 #define FRAME_SIZE          NVME_BLOCK_SIZE
 #define INVALID_UMEM_FRAME  UINT64_MAX
 
+/* LBA size in bytes; overridable via -b <lba_size> command line option */
+static uint32_t g_lba_size = 512;
+
 /* NVMe opcodes */
 #define NVME_CMD_READ       0x02
 #define NVME_CMD_WRITE      0x01
@@ -456,7 +459,7 @@ static int submit_nvme_read_cmd(struct pipeline_ctx *ctx, void *buf, size_t len,
     cmd->cdw11 = (slba >> 32) & 0xFFFFFFFF;
 
     /* CDW12: Number of logical blocks (0-based) */
-    uint32_t nlb = (len / 512) - 1;  /* Assuming 512-byte LBA */
+    uint32_t nlb = (len / g_lba_size) - 1;  /* LBA size set via -b option */
     cmd->cdw12 = nlb;
 
     uring->sq_array[index] = index;
@@ -650,7 +653,7 @@ static int run_pipeline(struct pipeline_ctx *ctx, uint64_t start_lba, int num_bl
            num_blocks, start_lba);
 
     for (int i = 0; i < num_blocks; i++) {
-        uint64_t lba = start_lba + i * (NVME_BLOCK_SIZE / 512);
+        uint64_t lba = start_lba + i * (NVME_BLOCK_SIZE / g_lba_size);
         uint64_t user_data;
         int result;
         size_t pkt_len;
@@ -756,7 +759,8 @@ static void usage(const char *prog)
     fprintf(stderr, "  -s <ip>         Source IP (default: 192.168.1.2)\n");
     fprintf(stderr, "  -p <port>       Destination port (default: 12345)\n");
     fprintf(stderr, "  -P <port>       Source port (default: 54321)\n");
-    fprintf(stderr, "  -h              Show this help\n");
+    fprintf(stderr, "  -b <lba_size>   LBA size in bytes (default: 512, use 4096 for 4Kn drives)\n");
+  fprintf(stderr, "  -h              Show this help\n");
     fprintf(stderr, "\nNote: Use NVMe character device (e.g., /dev/ng0n1) for URING_CMD\n");
 }
 
@@ -783,7 +787,7 @@ int main(int argc, char **argv)
     ctx.src_port = 54321;
 
     /* Parse arguments */
-    while ((opt = getopt(argc, argv, "d:i:q:l:n:D:S:a:s:p:P:h")) != -1) {
+    while ((opt = getopt(argc, argv, "d:i:q:l:n:D:S:a:s:p:P:b:h")) != -1) {
         switch (opt) {
         case 'd':
             ctx.nvme_device = optarg;
@@ -823,6 +827,13 @@ int main(int argc, char **argv)
             break;
         case 'P':
             ctx.src_port = atoi(optarg);
+            break;
+        case 'b':
+            g_lba_size = (uint32_t)strtoul(optarg, NULL, 0);
+            if (g_lba_size == 0 || (g_lba_size & (g_lba_size - 1)) != 0) {
+                fprintf(stderr, "Invalid LBA size: must be a power of 2\n");
+                return 1;
+            }
             break;
         case 'h':
         default:
