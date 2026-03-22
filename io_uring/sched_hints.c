@@ -18,11 +18,17 @@
 #include "io_uring.h"
 #include "sched_hints.h"
 
+/*
+ * Chain scheduler infrastructure is currently disabled.
+ * Define UBR_ENABLE_CHAIN_SCHED to enable chain dependency tracking,
+ * priority queue, and priority inheritance features.
+ * These features require io_sched_ctx to be embedded in io_ring_ctx
+ * and syscall ops 3/4/5 to be wired up.
+ */
+#ifdef UBR_ENABLE_CHAIN_SCHED
+
 static struct kmem_cache *chain_node_cache;
 
-/*
- * Initialize the sched_hints subsystem
- */
 static int __init io_sched_hints_init(void)
 {
 	chain_node_cache = kmem_cache_create("io_sched_chain_node",
@@ -33,22 +39,11 @@ static int __init io_sched_hints_init(void)
 	return 0;
 }
 
-/*
- * Cleanup the sched_hints subsystem
- */
 static void __exit io_sched_hints_exit(void)
 {
 	kmem_cache_destroy(chain_node_cache);
 }
 
-/*
- * Chain scheduler infrastructure is currently disabled.
- * Define UBR_ENABLE_CHAIN_SCHED to enable chain dependency tracking,
- * priority queue, and priority inheritance features.
- * These features require io_sched_ctx to be embedded in io_ring_ctx
- * and syscall ops 3/4/5 to be wired up.
- */
-#ifdef UBR_ENABLE_CHAIN_SCHED
 /* ============== Scheduler Context Management ============== */
 
 int io_sched_ctx_init(struct io_sched_ctx *sched, struct io_ring_ctx *ctx)
@@ -500,6 +495,9 @@ u8 io_sched_get_effective_prio(struct io_sched_ctx *sched, u64 id)
 }
 EXPORT_SYMBOL_GPL(io_sched_get_effective_prio);
 
+core_initcall(io_sched_hints_init);
+module_exit(io_sched_hints_exit);
+
 #endif /* UBR_ENABLE_CHAIN_SCHED */
 
 /* ============== Original Scheduler Hints (frequency tracking) ============== */
@@ -639,6 +637,3 @@ SYSCALL_DEFINE3(io_uring_sched_hints, unsigned int, op,
 	}
 }
 
-/* Module init/exit */
-core_initcall(io_sched_hints_init);
-module_exit(io_sched_hints_exit);
