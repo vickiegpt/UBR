@@ -361,11 +361,20 @@ int io_unified_ops_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	/* sqe->rw_flags contains the actual buffer length */
 	op->len = READ_ONCE(sqe->rw_flags);
 
-	if (!op->addr || !op->shared_addr)
-		return -EINVAL;
-
 #ifdef UBR_UMEM_ZEROCOPY
 	op->use_umem = (READ_ONCE(sqe->flags) & IOSQE_UBR_UMEM) != 0;
+#endif
+
+	if (!op->shared_addr)
+		return -EINVAL;
+	/* For non-UMEM path, addr must be a valid userspace pointer (non-zero).
+	 * For UMEM path, addr=0 is valid (first frame at offset 0). */
+#ifdef UBR_UMEM_ZEROCOPY
+	if (!op->use_umem && !op->addr)
+		return -EINVAL;
+#else
+	if (!op->addr)
+		return -EINVAL;
 #endif
 
 	/* For READ and SEND operations, we need a file descriptor */
