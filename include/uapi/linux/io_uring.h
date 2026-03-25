@@ -166,6 +166,10 @@ enum io_uring_sqe_flags_bit {
 /* don't post CQE if request succeeded */
 #define IOSQE_CQE_SKIP_SUCCESS	(1U << IOSQE_CQE_SKIP_SUCCESS_BIT)
 
+/* Use UBR UMEM buffer â addr is interpreted as UMEM offset */
+#define IOSQE_UBR_UMEM_BIT	7
+#define IOSQE_UBR_UMEM		(1U << IOSQE_UBR_UMEM_BIT)
+
 /*
  * io_uring_setup() flags
  */
@@ -661,6 +665,9 @@ enum io_uring_register_op {
 
 	IORING_REGISTER_MEM_REGION		= 34,
 
+	IORING_REGISTER_UBR_UMEM		= 35,
+	IORING_UNREGISTER_UBR_UMEM		= 36,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -1134,4 +1141,14 @@ struct io_uring_sched_stats {
 }
 #endif
 
+
+/*
+ * Argument for IORING_REGISTER_UBR_UMEM
+ */
+struct io_uring_ubr_umem_reg {
+	__u64	addr;		/* User virtual address of UMEM */
+	__u64	size;		/* Size in bytes */
+	__u32	frame_size;	/* Frame size (power of 2) */
+	__u32	flags;		/* Reserved, must be 0 */
+};
 #endif

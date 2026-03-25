@@ -22,6 +22,7 @@
 #include "rsrc.h"
 #include "unified_ops.h"
 #include "sched_hints.h"
+#include "ubr_umem.h"
 
 struct io_unified_ops {
 	struct file			*file;
@@ -30,6 +31,9 @@ struct io_unified_ops {
 	u32				len;		/* Buffer length */
 	u32				opcode;		/* Sub-opcode */
 	u32				offset;		/* File offset or send flags */
+#ifdef UBR_UMEM_ZEROCOPY
+	bool				use_umem;
+#endif
 };
 
 /* Simple advisory spinlock on userspace lock field to reduce (not eliminate)
@@ -136,6 +140,30 @@ static inline void io_unified_update_calc_stats(struct io_uring_unified_shared _
 	io_unified_unlock_shared(shared);
 }
 
+#ifdef UBR_UMEM_ZEROCOPY
+static int io_unified_do_read_umem(struct io_kiocb *req, struct io_unified_ops *op,
+				   struct io_ubr_umem *umem,
+				   struct io_uring_unified_shared __user *shared)
+{
+	void *kbuf;
+	loff_t pos;
+	ssize_t ret;
+
+	if (!op->file)
+		return -EBADF;
+
+	kbuf = io_ubr_umem_kaddr(umem, op->addr, op->len);
+	if (!kbuf)
+		return -EINVAL;
+
+	pos = op->offset;
+	ret = kernel_read(op->file, kbuf, op->len, &pos);
+
+	io_unified_update_read_stats(shared, ret, ret < 0);
+	return ret;
+}
+#endif
+
 static int io_unified_do_read(struct io_kiocb *req, struct io_unified_ops *op,
 			      struct io_uring_unified_shared __user *shared)
 {
@@ -170,6 +198,44 @@ static int io_unified_do_read(struct io_kiocb *req, struct io_unified_ops *op,
 	return ret;
 }
 
+#ifdef UBR_UMEM_ZEROCOPY
+static int io_unified_do_send_umem(struct io_kiocb *req, struct io_unified_ops *op,
+				   struct io_ubr_umem *umem,
+				   struct io_uring_unified_shared __user *shared)
+{
+	struct socket *sock;
+	struct msghdr msg = {};
+	struct bio_vec bvec;
+	struct page *page;
+	u32 pgoff;
+	ssize_t ret;
+
+	if (!op->file)
+		return -EBADF;
+
+	sock = sock_from_file(op->file);
+	if (!sock)
+		return -ENOTSOCK;
+
+	page = io_ubr_umem_offset_to_page(umem, op->addr, &pgoff);
+	if (!page)
+		return -EINVAL;
+
+	/*
+	 * Simple single-page path.  Typical frame_size == PAGE_SIZE,
+	 * so most sends fit in one page.
+	 */
+	bvec_set_page(&bvec, page, min_t(u32, op->len, PAGE_SIZE - pgoff), pgoff);
+	iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, &bvec, 1, bvec.bv_len);
+	msg.msg_flags = op->offset;
+
+	ret = sock_sendmsg(sock, &msg);
+
+	io_unified_update_send_stats(shared, ret, ret < 0);
+	return ret;
+}
+#endif
+
 static int io_unified_do_send(struct io_kiocb *req, struct io_unified_ops *op,
 			      struct io_uring_unified_shared __user *shared)
 {
@@ -200,6 +266,36 @@ static int io_unified_do_send(struct io_kiocb *req, struct io_unified_ops *op,
 
 	return ret;
 }
+
+#ifdef UBR_UMEM_ZEROCOPY
+static int io_unified_do_calc_umem(struct io_kiocb *req, struct io_unified_ops *op,
+				   struct io_ubr_umem *umem,
+				   struct io_uring_unified_shared __user *shared)
+{
+	void *kbuf;
+	u64 *data;
+	u64 result = 0;
+	u32 i, count;
+
+	count = op->len / sizeof(u64);
+	if (count == 0)
+		return -EINVAL;
+
+	kbuf = io_ubr_umem_kaddr(umem, op->addr, op->len);
+	if (!kbuf)
+		return -EINVAL;
+
+	data = (u64 *)kbuf;
+	for (i = 0; i < count; i++)
+		result += data[i];
+
+	/* Write result back in-place */
+	data[0] = result;
+
+	io_unified_update_calc_stats(shared, result, false);
+	return sizeof(result);
+}
+#endif
 
 static int io_unified_do_calc(struct io_kiocb *req, struct io_unified_ops *op,
 			      struct io_uring_unified_shared __user *shared)
@@ -268,6 +364,10 @@ int io_unified_ops_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	if (!op->addr || !op->shared_addr)
 		return -EINVAL;
 
+#ifdef UBR_UMEM_ZEROCOPY
+	op->use_umem = (READ_ONCE(sqe->flags) & IOSQE_UBR_UMEM) != 0;
+#endif
+
 	/* For READ and SEND operations, we need a file descriptor */
 	if (op->opcode == IO_UNIFIED_OP_READ || op->opcode == IO_UNIFIED_OP_SEND) {
 		if (req->file)
@@ -293,20 +393,32 @@ int io_unified_ops_issue(struct io_kiocb *req, unsigned int issue_flags)
 	/* Execute the appropriate operation based on opcode */
 	switch (op->opcode) {
 	case IO_UNIFIED_OP_READ:
-		ret = io_unified_do_read(req, op, shared);
-		/* Update scheduler hints for read frequency tracking */
+#ifdef UBR_UMEM_ZEROCOPY
+		if (op->use_umem && req->ctx->ubr_umem)
+			ret = io_unified_do_read_umem(req, op, req->ctx->ubr_umem, shared);
+		else
+#endif
+			ret = io_unified_do_read(req, op, shared);
 		if (req->tctx)
 			io_sched_record_op(req->tctx, 0, ret > 0 ? ret : 0);
 		break;
 	case IO_UNIFIED_OP_SEND:
-		ret = io_unified_do_send(req, op, shared);
-		/* Update scheduler hints for send frequency tracking */
+#ifdef UBR_UMEM_ZEROCOPY
+		if (op->use_umem && req->ctx->ubr_umem)
+			ret = io_unified_do_send_umem(req, op, req->ctx->ubr_umem, shared);
+		else
+#endif
+			ret = io_unified_do_send(req, op, shared);
 		if (req->tctx)
 			io_sched_record_op(req->tctx, 1, ret > 0 ? ret : 0);
 		break;
 	case IO_UNIFIED_OP_CALC:
-		ret = io_unified_do_calc(req, op, shared);
-		/* Calc ops recorded as type 2 */
+#ifdef UBR_UMEM_ZEROCOPY
+		if (op->use_umem && req->ctx->ubr_umem)
+			ret = io_unified_do_calc_umem(req, op, req->ctx->ubr_umem, shared);
+		else
+#endif
+			ret = io_unified_do_calc(req, op, shared);
 		if (req->tctx)
 			io_sched_record_op(req->tctx, 2, 0);
 		break;

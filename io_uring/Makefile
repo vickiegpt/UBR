@@ -6,6 +6,9 @@ ifdef CONFIG_GCOV_PROFILE_URING
 GCOV_PROFILE := y
 endif
 
+# UBR UMEM zero-copy feature flag (comment out to disable)
+ccflags-y += -DUBR_UMEM_ZEROCOPY
+
 obj-$(CONFIG_IO_URING)		+= io_uring.o opdef.o kbuf.o rsrc.o notif.o \
 					tctx.o filetable.o rw.o poll.o \
 					eventfd.o uring_cmd.o openclose.o \
@@ -14,7 +17,8 @@ obj-$(CONFIG_IO_URING)		+= io_uring.o opdef.o kbuf.o rsrc.o notif.o \
 					statx.o timeout.o cancel.o \
 					waitid.o register.o truncate.o \
 					memmap.o alloc_cache.o unified_ops.o \
-					sched_hints.o
+					sched_hints.o \
+					ubr_umem.o
 obj-$(CONFIG_IO_URING_ZCRX)	+= zcrx.o
 obj-$(CONFIG_IO_WQ)		+= io-wq.o
 obj-$(CONFIG_FUTEX)		+= futex.o

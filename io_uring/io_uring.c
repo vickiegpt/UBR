@@ -98,6 +98,7 @@
 #include "msg_ring.h"
 #include "memmap.h"
 #include "zcrx.h"
+#include "ubr_umem.h"
 
 #include "timeout.h"
 #include "poll.h"
@@ -2734,6 +2735,9 @@ static __cold void io_ring_ctx_free(struct io_ring_ctx *ctx)
 	io_free_alloc_caches(ctx);
 	io_destroy_buffers(ctx);
 	io_free_region(ctx, &ctx->param_region);
+#ifdef UBR_UMEM_ZEROCOPY
+	io_ubr_umem_destroy(ctx);
+#endif
 	mutex_unlock(&ctx->uring_lock);
 	if (ctx->sq_creds)
 		put_cred(ctx->sq_creds);

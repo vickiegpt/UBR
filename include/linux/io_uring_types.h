@@ -8,6 +8,10 @@
 #include <linux/llist.h>
 #include <uapi/linux/io_uring.h>
 
+#ifdef UBR_UMEM_ZEROCOPY
+struct io_ubr_umem;
+#endif
+
 enum {
 	/*
 	 * A hint to not wake right away but delay until there are enough of
@@ -460,6 +464,10 @@ struct io_ring_ctx {
 	struct io_mapped_region		ring_region;
 	/* used for optimised request parameter and wait argument passing  */
 	struct io_mapped_region		param_region;
+
+#ifdef UBR_UMEM_ZEROCOPY
+	struct io_ubr_umem	*ubr_umem;
+#endif
 };
 
 /*

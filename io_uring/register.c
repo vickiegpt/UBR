@@ -31,6 +31,7 @@
 #include "msg_ring.h"
 #include "memmap.h"
 #include "zcrx.h"
+#include "ubr_umem.h"
 
 #define IORING_MAX_RESTRICTIONS	(IORING_RESTRICTION_LAST + \
 				 IORING_REGISTER_LAST + IORING_OP_LAST)
@@ -835,6 +836,14 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			break;
 		ret = io_register_mem_region(ctx, arg);
 		break;
+#ifdef UBR_UMEM_ZEROCOPY
+	case IORING_REGISTER_UBR_UMEM:
+		ret = io_ubr_umem_register(ctx, arg);
+		break;
+	case IORING_UNREGISTER_UBR_UMEM:
+		ret = io_ubr_umem_unregister(ctx);
+		break;
+#endif
 	default:
 		ret = -EINVAL;
 		break;
