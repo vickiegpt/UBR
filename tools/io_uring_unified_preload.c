@@ -55,7 +55,7 @@ struct io_uring_unified_shared {
 };
 
 /* Global state */
-static struct io_ring *g_ring = NULL;
+static struct io_uring *g_ring = NULL;
 static struct io_uring_unified_shared *g_shared = NULL;
 static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_initialized = 0;

@@ -38,6 +38,9 @@
 #define FRAME_SIZE          NVME_BLOCK_SIZE
 #define INVALID_UMEM_FRAME  UINT64_MAX
 
+/* Room for ETH+IP+UDP headers before NVMe payload in UMEM frame */
+#define PKT_HEADER_ROOM     64
+
 /* LBA size in bytes; overridable via -b <lba_size> command line option */
 static uint32_t g_lba_size = 512;
 
@@ -517,20 +520,23 @@ static uint16_t compute_checksum(void *data, int len)
 /* Userspace computation on data */
 static void process_data(void *data, size_t len)
 {
-    uint64_t *ptr = data;
+    uint64_t *p = data;
     size_t count = len / sizeof(uint64_t);
     uint64_t checksum = 0;
 
     for (size_t i = 0; i < count; i++) {
-        checksum ^= ptr[i];
-        ptr[i] = ptr[i] ^ 0xDEADBEEFCAFEBABEULL;
+        checksum ^= p[i];
+        p[i] = p[i] ^ 0xDEADBEEFCAFEBABEULL;
     }
 
     if (count > 0)
-        ptr[count - 1] = checksum;
+        p[count - 1] = checksum;
 }
 
-/* Build UDP packet in UMEM frame */
+/* Build UDP packet headers in UMEM frame.
+ * When payload is already at frame + PKT_HEADER_ROOM (zero-copy NVMe path),
+ * pass payload=NULL to skip the memcpy.
+ * When payload is in a separate buffer, pass non-NULL to copy it. */
 static size_t build_packet(struct pipeline_ctx *ctx, void *frame,
                            void *payload, size_t payload_len)
 {
@@ -565,8 +571,9 @@ static size_t build_packet(struct pipeline_ctx *ctx, void *frame,
     udp->len = htons(sizeof(*udp) + payload_len);
     udp->check = 0;
 
-    /* Copy payload */
-    memcpy(data, payload, payload_len);
+    /* Copy payload only if provided (non-zero-copy fallback) */
+    if (payload)
+        memcpy(data, payload, payload_len);
 
     total_len = sizeof(*eth) + sizeof(*ip) + sizeof(*udp) + payload_len;
     return total_len;
@@ -633,16 +640,8 @@ static int setup_sched_hints(uint64_t read_freq_ns, uint64_t send_freq_ns, int b
 /* Main pipeline loop using io_uring unified ops */
 static int run_pipeline(struct pipeline_ctx *ctx, uint64_t start_lba, int num_blocks)
 {
-    void *read_buf;
     uint64_t frame_addr;
     int ret;
-
-    /* Allocate read buffer (aligned for DMA) */
-    ret = posix_memalign(&read_buf, NVME_BLOCK_SIZE, NVME_BLOCK_SIZE);
-    if (ret) {
-        fprintf(stderr, "posix_memalign failed\n");
-        return -1;
-    }
 
     /* Set scheduler hints for expected I/O pattern */
     /* Estimate: 100us per read, 50us per send, batch of num_blocks */
@@ -658,48 +657,49 @@ static int run_pipeline(struct pipeline_ctx *ctx, uint64_t start_lba, int num_bl
         int result;
         size_t pkt_len;
 
-        /* Submit NVMe read via IORING_OP_URING_CMD */
-        ret = submit_nvme_read_cmd(ctx, read_buf, NVME_BLOCK_SIZE, lba, i);
+        /* Allocate UMEM frame FIRST so NVMe can DMA directly into it */
+        frame_addr = xsk_alloc_umem_frame(&ctx->xsk);
+        if (frame_addr == INVALID_UMEM_FRAME) {
+            xsk_tx_complete(&ctx->xsk);
+            frame_addr = xsk_alloc_umem_frame(&ctx->xsk);
+            if (frame_addr == INVALID_UMEM_FRAME) {
+                fprintf(stderr, "No free UMEM frames, skipping\n");
+                continue;
+            }
+        }
+
+        void *frame = ctx->xsk.umem_area + frame_addr;
+        void *nvme_buf = frame + PKT_HEADER_ROOM;
+
+        /* NVMe reads directly into UMEM frame (zero-copy) */
+        ret = submit_nvme_read_cmd(ctx, nvme_buf, NVME_BLOCK_SIZE, lba, i);
         if (ret < 0) {
             perror("submit_nvme_read_cmd");
+            xsk_free_umem_frame(&ctx->xsk, frame_addr);
             break;
         }
 
-        /* Wait for completion */
         ret = wait_nvme_completion(ctx, &user_data, &result);
         if (ret < 0) {
             perror("wait_nvme_completion");
+            xsk_free_umem_frame(&ctx->xsk, frame_addr);
             break;
         }
 
         if (result < 0) {
             fprintf(stderr, "NVMe read error: %d (%s)\n", -result, strerror(-result));
+            xsk_free_umem_frame(&ctx->xsk, frame_addr);
             continue;
         }
 
         printf("Block %d: read from LBA %lu (result=%d)\n", i, lba, result);
+        io_uring_sched_hints_record(0);
 
-        /* Record read operation for scheduler */
-        io_uring_sched_hints_record(0);  /* 0 = read */
+        /* Compute in-place on UMEM data (zero-copy) */
+        process_data(nvme_buf, NVME_BLOCK_SIZE);
 
-        /* Userspace computation */
-        process_data(read_buf, NVME_BLOCK_SIZE);
-
-        /* Allocate UMEM frame */
-        frame_addr = xsk_alloc_umem_frame(&ctx->xsk);
-        if (frame_addr == INVALID_UMEM_FRAME) {
-            fprintf(stderr, "No free UMEM frames\n");
-            xsk_tx_complete(&ctx->xsk);
-            frame_addr = xsk_alloc_umem_frame(&ctx->xsk);
-            if (frame_addr == INVALID_UMEM_FRAME) {
-                fprintf(stderr, "Still no free frames, skipping\n");
-                continue;
-            }
-        }
-
-        /* Build packet in UMEM */
-        void *frame = ctx->xsk.umem_area + frame_addr;
-        pkt_len = build_packet(ctx, frame, read_buf, NVME_BLOCK_SIZE);
+        /* Build headers only; payload already in frame at PKT_HEADER_ROOM */
+        pkt_len = build_packet(ctx, frame, NULL, NVME_BLOCK_SIZE);
 
         /* Submit TX */
         xsk_tx_submit(&ctx->xsk, frame_addr, pkt_len);
@@ -719,7 +719,6 @@ static int run_pipeline(struct pipeline_ctx *ctx, uint64_t start_lba, int num_bl
         xsk_tx_complete(&ctx->xsk);
     }
 
-    free(read_buf);
     return 0;
 }
 

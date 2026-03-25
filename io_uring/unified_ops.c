@@ -205,9 +205,11 @@ static int io_unified_do_send_umem(struct io_kiocb *req, struct io_unified_ops *
 {
 	struct socket *sock;
 	struct msghdr msg = {};
-	struct bio_vec bvec;
+	struct bio_vec stack_bvecs[4];
+	struct bio_vec *bvecs = stack_bvecs;
 	struct page *page;
-	u32 pgoff;
+	u32 pgoff, nr_pages, remaining, i;
+	u64 cur_off;
 	ssize_t ret;
 
 	if (!op->file)
@@ -217,21 +219,49 @@ static int io_unified_do_send_umem(struct io_kiocb *req, struct io_unified_ops *
 	if (!sock)
 		return -ENOTSOCK;
 
-	page = io_ubr_umem_offset_to_page(umem, op->addr, &pgoff);
-	if (!page)
+	/* Validate bounds */
+	if (!io_ubr_umem_kaddr(umem, op->addr, op->len))
 		return -EINVAL;
 
-	/*
-	 * Simple single-page path.  Typical frame_size == PAGE_SIZE,
-	 * so most sends fit in one page.
-	 */
-	bvec_set_page(&bvec, page, min_t(u32, op->len, PAGE_SIZE - pgoff), pgoff);
-	iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, &bvec, 1, bvec.bv_len);
+	/* Calculate number of pages needed */
+	pgoff = (umem->page_offset + op->addr) & ~PAGE_MASK;
+	nr_pages = (pgoff + op->len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+	if (nr_pages > ARRAY_SIZE(stack_bvecs)) {
+		bvecs = kmalloc_array(nr_pages, sizeof(struct bio_vec), GFP_KERNEL);
+		if (!bvecs)
+			return -ENOMEM;
+	}
+
+	/* Build bvec array spanning all pages */
+	cur_off = op->addr;
+	remaining = op->len;
+	for (i = 0; i < nr_pages; i++) {
+		u32 this_pgoff, this_len;
+
+		page = io_ubr_umem_offset_to_page(umem, cur_off, &this_pgoff);
+		if (!page) {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		this_len = min_t(u32, remaining, PAGE_SIZE - this_pgoff);
+		bvec_set_page(&bvecs[i], page, this_len, this_pgoff);
+
+		cur_off += this_len;
+		remaining -= this_len;
+	}
+
+	iov_iter_bvec(&msg.msg_iter, ITER_SOURCE, bvecs, nr_pages, op->len);
 	msg.msg_flags = op->offset;
 
 	ret = sock_sendmsg(sock, &msg);
 
 	io_unified_update_send_stats(shared, ret, ret < 0);
+
+out:
+	if (bvecs != stack_bvecs)
+		kfree(bvecs);
 	return ret;
 }
 #endif
