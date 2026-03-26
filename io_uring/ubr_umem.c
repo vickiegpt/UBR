@@ -41,6 +41,8 @@ int io_ubr_umem_register(struct io_ring_ctx *ctx, void __user *arg)
 		return -EINVAL;
 	if (reg.size & (reg.frame_size - 1))
 		return -EINVAL;
+	if (reg.flags != 0)
+		return -EINVAL;
 	if (reg.size > (1ULL << 30))	/* 1 GB cap */
 		return -EINVAL;
 

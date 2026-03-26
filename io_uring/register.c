@@ -838,9 +838,15 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 		break;
 #ifdef UBR_UMEM_ZEROCOPY
 	case IORING_REGISTER_UBR_UMEM:
+		ret = -EINVAL;
+		if (!arg || nr_args != 1)
+			break;
 		ret = io_ubr_umem_register(ctx, arg);
 		break;
 	case IORING_UNREGISTER_UBR_UMEM:
+		ret = -EINVAL;
+		if (arg || nr_args)
+			break;
 		ret = io_ubr_umem_unregister(ctx);
 		break;
 #endif

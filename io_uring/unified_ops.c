@@ -407,11 +407,11 @@ int io_unified_ops_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 		return -EINVAL;
 #endif
 
-	/* For READ and SEND operations, we need a file descriptor */
+	/* For READ and SEND, manually resolve file since needs_file is
+	 * not set in opdef (CALC legitimately uses fd=-1). */
 	if (op->opcode == IO_UNIFIED_OP_READ || op->opcode == IO_UNIFIED_OP_SEND) {
-		if (req->file)
-			op->file = req->file;
-		else
+		op->file = io_file_get_normal(req, READ_ONCE(sqe->fd));
+		if (!op->file)
 			return -EBADF;
 	}
 

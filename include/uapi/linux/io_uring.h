@@ -1137,11 +1137,6 @@ struct io_uring_sched_stats {
 	__u64	__resv[4];		/* Reserved */
 };
 
-#ifdef __cplusplus
-}
-#endif
-
-
 /*
  * Argument for IORING_REGISTER_UBR_UMEM
  */
@@ -1151,4 +1146,10 @@ struct io_uring_ubr_umem_reg {
 	__u32	frame_size;	/* Frame size (power of 2) */
 	__u32	flags;		/* Reserved, must be 0 */
 };
+
+#ifdef __cplusplus
+}
+#endif
+
+
 #endif
