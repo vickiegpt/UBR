@@ -1041,6 +1041,7 @@ enum io_uring_unified_op {
 	IO_UNIFIED_OP_READ = 0,
 	IO_UNIFIED_OP_SEND = 1,
 	IO_UNIFIED_OP_CALC = 2,
+	IO_UNIFIED_OP_WRITE = 3,	/* Write UMEM data to file/NVMe */
 };
 
 /*

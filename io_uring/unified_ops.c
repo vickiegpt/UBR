@@ -141,25 +141,145 @@ static inline void io_unified_update_calc_stats(struct io_uring_unified_shared _
 }
 
 #ifdef UBR_UMEM_ZEROCOPY
+/*
+ * UMEM direct-I/O read: bypass page cache entirely.
+ * NVMe driver receives IOCB_DIRECT + bvec pointing to UMEM physical
+ * pages → sets up DMA scatter-gather → hardware writes directly to UMEM.
+ *
+ * Data path: NVMe SSD → DMA → UMEM pages (zero software copies)
+ */
 static int io_unified_do_read_umem(struct io_kiocb *req, struct io_unified_ops *op,
 				   struct io_ubr_umem *umem,
 				   struct io_uring_unified_shared __user *shared)
 {
-	void *kbuf;
-	loff_t pos;
+	struct kiocb kiocb;
+	struct iov_iter iter;
+	struct bio_vec *bvecs;
+	struct bio_vec stack_bvecs[4];
+	struct page *page;
+	u32 pgoff, nr_pages, remaining, i;
+	u64 cur_off;
 	ssize_t ret;
 
 	if (!op->file)
 		return -EBADF;
-
-	kbuf = io_ubr_umem_kaddr(umem, op->addr, op->len);
-	if (!kbuf)
+	if (!op->file->f_op->read_iter)
 		return -EINVAL;
 
-	pos = op->offset;
-	ret = kernel_read(op->file, kbuf, op->len, &pos);
+	/* Validate UMEM bounds */
+	if (!io_ubr_umem_kaddr(umem, op->addr, op->len))
+		return -EINVAL;
+
+	/* Build bvec array pointing to UMEM pages */
+	pgoff = (umem->page_offset + op->addr) & ~PAGE_MASK;
+	nr_pages = (pgoff + op->len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+	bvecs = (nr_pages <= ARRAY_SIZE(stack_bvecs)) ? stack_bvecs :
+		kmalloc_array(nr_pages, sizeof(struct bio_vec), GFP_KERNEL);
+	if (!bvecs)
+		return -ENOMEM;
+
+	cur_off = op->addr;
+	remaining = op->len;
+	for (i = 0; i < nr_pages; i++) {
+		u32 this_pgoff, this_len;
+		page = io_ubr_umem_offset_to_page(umem, cur_off, &this_pgoff);
+		if (!page) {
+			ret = -EINVAL;
+			goto out;
+		}
+		this_len = min_t(u32, remaining, PAGE_SIZE - this_pgoff);
+		bvec_set_page(&bvecs[i], page, this_len, this_pgoff);
+		cur_off += this_len;
+		remaining -= this_len;
+	}
+
+	iov_iter_bvec(&iter, ITER_DEST, bvecs, nr_pages, op->len);
+
+	/* Direct I/O: bypasses page cache, NVMe DMA goes straight to UMEM */
+	init_sync_kiocb(&kiocb, op->file);
+	kiocb.ki_pos = op->offset;
+	kiocb.ki_flags |= IOCB_DIRECT;
+
+	ret = op->file->f_op->read_iter(&kiocb, &iter);
+
+	/* EIOCBQUEUED should not happen with sync kiocb */
+	if (ret == -EIOCBQUEUED)
+		ret = -EIO;
 
 	io_unified_update_read_stats(shared, ret, ret < 0);
+
+out:
+	if (bvecs != stack_bvecs)
+		kfree(bvecs);
+	return ret;
+}
+
+/*
+ * UMEM direct-I/O write: NIC→NVMe direction.
+ * Data in UMEM pages (from AF_XDP RX or GPU DMA) is written directly
+ * to NVMe via DMA, bypassing page cache.
+ *
+ * Data path: UMEM pages → DMA → NVMe SSD (zero software copies)
+ */
+static int io_unified_do_write_umem(struct io_kiocb *req, struct io_unified_ops *op,
+				    struct io_ubr_umem *umem,
+				    struct io_uring_unified_shared __user *shared)
+{
+	struct kiocb kiocb;
+	struct iov_iter iter;
+	struct bio_vec *bvecs;
+	struct bio_vec stack_bvecs[4];
+	struct page *page;
+	u32 pgoff, nr_pages, remaining, i;
+	u64 cur_off;
+	ssize_t ret;
+
+	if (!op->file)
+		return -EBADF;
+	if (!op->file->f_op->write_iter)
+		return -EINVAL;
+
+	if (!io_ubr_umem_kaddr(umem, op->addr, op->len))
+		return -EINVAL;
+
+	pgoff = (umem->page_offset + op->addr) & ~PAGE_MASK;
+	nr_pages = (pgoff + op->len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+
+	bvecs = (nr_pages <= ARRAY_SIZE(stack_bvecs)) ? stack_bvecs :
+		kmalloc_array(nr_pages, sizeof(struct bio_vec), GFP_KERNEL);
+	if (!bvecs)
+		return -ENOMEM;
+
+	cur_off = op->addr;
+	remaining = op->len;
+	for (i = 0; i < nr_pages; i++) {
+		u32 this_pgoff, this_len;
+		page = io_ubr_umem_offset_to_page(umem, cur_off, &this_pgoff);
+		if (!page) { ret = -EINVAL; goto out; }
+		this_len = min_t(u32, remaining, PAGE_SIZE - this_pgoff);
+		bvec_set_page(&bvecs[i], page, this_len, this_pgoff);
+		cur_off += this_len;
+		remaining -= this_len;
+	}
+
+	iov_iter_bvec(&iter, ITER_SOURCE, bvecs, nr_pages, op->len);
+
+	init_sync_kiocb(&kiocb, op->file);
+	kiocb.ki_pos = op->offset;
+	kiocb.ki_flags |= IOCB_DIRECT | IOCB_DSYNC;
+
+	ret = op->file->f_op->write_iter(&kiocb, &iter);
+
+	if (ret == -EIOCBQUEUED)
+		ret = -EIO;
+
+	/* Reuse send stats for write tracking */
+	io_unified_update_send_stats(shared, ret, ret < 0);
+
+out:
+	if (bvecs != stack_bvecs)
+		kfree(bvecs);
 	return ret;
 }
 #endif
@@ -378,7 +498,7 @@ int io_unified_ops_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	/* sqe->len contains the sub-opcode */
 	op->opcode = READ_ONCE(sqe->len);
 
-	if (op->opcode > IO_UNIFIED_OP_CALC)
+	if (op->opcode > IO_UNIFIED_OP_WRITE)
 		return -EINVAL;
 
 	/* sqe->addr contains the buffer address */
@@ -416,7 +536,8 @@ int io_unified_ops_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 
 	/* For READ and SEND, manually resolve file since needs_file is
 	 * not set in opdef (CALC legitimately uses fd=-1). */
-	if (op->opcode == IO_UNIFIED_OP_READ || op->opcode == IO_UNIFIED_OP_SEND) {
+	if (op->opcode == IO_UNIFIED_OP_READ || op->opcode == IO_UNIFIED_OP_SEND ||
+	    op->opcode == IO_UNIFIED_OP_WRITE) {
 		op->file = io_file_get_normal(req, READ_ONCE(sqe->fd));
 		if (!op->file)
 			return -EBADF;
@@ -474,6 +595,19 @@ int io_unified_ops_issue(struct io_kiocb *req, unsigned int issue_flags)
 			ret = io_unified_do_calc(req, op, shared);
 		if (req->tctx)
 			io_sched_record_op(req->tctx, 2, 0);
+		break;
+	case IO_UNIFIED_OP_WRITE:
+#ifdef UBR_UMEM_ZEROCOPY
+		if (op->use_umem && req->ctx->ubr_umem)
+			ret = io_unified_do_write_umem(req, op, req->ctx->ubr_umem, shared);
+		else
+#endif
+		{
+			/* Non-UMEM write not implemented */
+			ret = -EOPNOTSUPP;
+		}
+		if (req->tctx)
+			io_sched_record_op(req->tctx, 1, ret > 0 ? ret : 0);
 		break;
 	default:
 		ret = -EINVAL;
