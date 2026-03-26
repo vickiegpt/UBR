@@ -24,6 +24,7 @@
 #include <time.h>
 #include <linux/io_uring.h>
 
+#ifdef UBR_ENABLE_SCHED_HINTS
 /* Syscall number for io_uring_sched_hints */
 #ifndef __NR_io_uring_sched_hints
 #define __NR_io_uring_sched_hints 468
@@ -43,6 +44,8 @@ struct io_uring_sched_hints {
     uint32_t flags;
     uint64_t __resv[2];
 };
+#endif /* UBR_ENABLE_SCHED_HINTS */
+
 
 /* External function from preload library (weak symbols for LD_PRELOAD) */
 extern __attribute__((weak)) ssize_t io_uring_calculate(uint64_t *data, size_t count);
@@ -143,6 +146,10 @@ void process_c_calculate(void)
 	printf("\n");
 
 	/* Calculate sum using io_uring */
+	if (!io_uring_calculate) {
+		printf("[Process C] io_uring_calculate not available (no preload)\n");
+		return;
+	}
 	ret = io_uring_calculate(data, 10);
 	if (ret < 0) {
 		perror("io_uring_calculate");
@@ -153,6 +160,7 @@ void process_c_calculate(void)
 }
 
 /* Process D: Scheduler hints test */
+#ifdef UBR_ENABLE_SCHED_HINTS
 void process_d_sched_hints(void)
 {
 	struct io_uring_sched_hints hints;
@@ -203,8 +211,10 @@ void process_d_sched_hints(void)
 	       hints.read_freq_ns, hints.send_freq_ns);
 	printf("[Process D] Scheduler hints test completed\n");
 }
+#endif /* UBR_ENABLE_SCHED_HINTS */
 
 /* Process E: NVMe-XDP pipeline simulation */
+#ifdef UBR_ENABLE_SCHED_HINTS
 void process_e_nvme_xdp_pipeline(void)
 {
 	struct io_uring_sched_hints hints;
@@ -292,6 +302,7 @@ void process_e_nvme_xdp_pipeline(void)
 	close(fd);
 	unlink("/tmp/test_nvme_sim.dat");
 }
+#endif /* UBR_ENABLE_SCHED_HINTS */
 
 int main(int argc, char *argv[])
 {
@@ -317,16 +328,20 @@ int main(int argc, char *argv[])
 	process_c_calculate();
 	printf("\n");
 
+#ifdef UBR_ENABLE_SCHED_HINTS
 	printf("--- Simulating Process D (SCHEDULER HINTS) ---\n");
 	process_d_sched_hints();
+#endif
 	printf("\n");
 
+#ifdef UBR_ENABLE_SCHED_HINTS
 	printf("--- Simulating Process E (NVMe-XDP PIPELINE) ---\n");
 	process_e_nvme_xdp_pipeline();
+#endif
 	printf("\n");
 
 	/* Print statistics from shared memory */
-	print_unified_stats();
+	if (print_unified_stats) print_unified_stats();
 
 	printf("=== All tests completed! ===\n");
 	return 0;
