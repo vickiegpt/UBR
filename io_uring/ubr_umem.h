@@ -10,6 +10,7 @@
 #include <linux/mm_types.h>
 
 struct io_ring_ctx;
+struct io_uring_unified_shared;
 
 struct io_ubr_umem {
 	struct page	**pages;
@@ -20,6 +21,7 @@ struct io_ubr_umem {
 	u32		nr_pages;
 	u32		frame_size;
 	u32		nr_frames;
+	struct io_uring_unified_shared __user *shared;
 };
 
 int io_ubr_umem_register(struct io_ring_ctx *ctx, void __user *arg);

@@ -1143,6 +1143,7 @@ struct io_uring_sched_stats {
 struct io_uring_ubr_umem_reg {
 	__u64	addr;		/* User virtual address of UMEM */
 	__u64	size;		/* Size in bytes */
+	__u64	shared_addr;	/* User address of io_uring_unified_shared stats */
 	__u32	frame_size;	/* Frame size (power of 2) */
 	__u32	flags;		/* Reserved, must be 0 */
 };

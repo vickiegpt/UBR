@@ -83,6 +83,7 @@ int io_ubr_umem_register(struct io_ring_ctx *ctx, void __user *arg)
 	umem->nr_pages     = nr_pages;
 	umem->frame_size   = reg.frame_size;
 	umem->nr_frames    = reg.size / reg.frame_size;
+	umem->shared        = (struct io_uring_unified_shared __user *)(uintptr_t)reg.shared_addr;
 
 	ctx->ubr_umem = umem;
 	return 0;

@@ -179,7 +179,9 @@ static int io_unified_do_read(struct io_kiocb *req, struct io_unified_ops *op,
 	if (!buf)
 		return -ENOMEM;
 
-	pos = op->offset;
+	/* Non-UMEM path: sqe->off is overlapped with sqe->addr2 (shared_addr),
+	 * so op->offset is not a valid file offset. Always read from 0. */
+	pos = 0;
 
 	/* Perform the read using kernel_read */
 	ret = kernel_read(op->file, buf, op->len, &pos);
@@ -395,8 +397,13 @@ int io_unified_ops_prep(struct io_kiocb *req, const struct io_uring_sqe *sqe)
 	op->use_umem = (READ_ONCE(sqe->flags) & IOSQE_UBR_UMEM) != 0;
 #endif
 
+#ifdef UBR_UMEM_ZEROCOPY
+	if (!op->use_umem && !op->shared_addr)
+		return -EINVAL;
+#else
 	if (!op->shared_addr)
 		return -EINVAL;
+#endif
 	/* For non-UMEM path, addr must be a valid userspace pointer (non-zero).
 	 * For UMEM path, addr=0 is valid (first frame at offset 0). */
 #ifdef UBR_UMEM_ZEROCOPY
@@ -424,9 +431,16 @@ int io_unified_ops_issue(struct io_kiocb *req, unsigned int issue_flags)
 	struct io_uring_unified_shared __user *shared;
 	int ret;
 
-	/* Map shared memory */
-	shared = (struct io_uring_unified_shared __user *)op->shared_addr;
-	if (!access_ok(shared, sizeof(*shared)))
+	/* Get shared stats structure.
+	 * UMEM path: shared was registered with the UMEM.
+	 * Non-UMEM path: shared comes from sqe->addr2 (= sqe->off). */
+#ifdef UBR_UMEM_ZEROCOPY
+	if (op->use_umem && req->ctx->ubr_umem && req->ctx->ubr_umem->shared)
+		shared = req->ctx->ubr_umem->shared;
+	else
+#endif
+		shared = (struct io_uring_unified_shared __user *)op->shared_addr;
+	if (!shared || !access_ok(shared, sizeof(*shared)))
 		return -EFAULT;
 
 	/* Execute the appropriate operation based on opcode */
