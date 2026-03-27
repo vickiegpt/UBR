@@ -22,6 +22,7 @@ struct io_ubr_umem {
 	u32		frame_size;
 	u32		nr_frames;
 	struct io_uring_unified_shared __user *shared;
+	atomic_t	refcount;	/* shared across multiple io_ring_ctx */
 };
 
 int io_ubr_umem_register(struct io_ring_ctx *ctx, void __user *arg);
